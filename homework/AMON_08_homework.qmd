@@ -210,7 +210,7 @@ post_Sem <- mdl_sim_mod|>
   labs(title = "\nPosterior distribution of phonologically similar and\nsemantically different cities",
        x = "\nDistance in sqrt(mm)",
        y = "") +
-  scale_x_continuous(limits = c(-2.5,2.5))+
+  scale_x_continuous(limits = c(-2,2))+
   theme_minimal()
 post_Sem
 
@@ -225,7 +225,7 @@ post_Phon <- mdl_sim_mod|>
   labs(title = "\nPosterior distribution of semantically similar and\nphonologically different cities",
        x = "\nDistance in sqrt(mm)",
        y = "") +
-  scale_x_continuous(limits = c(-2.3,2.3))+
+  scale_x_continuous(limits = c(-2,2))+
   theme_minimal()
 post_Phon
 
@@ -240,41 +240,116 @@ post_Int <- mdl_sim_mod|>
   labs(title = "\nPosterior distribution of phonologically and\nsemantically different cities",
        x = "\nDistance in sqrt(mm)",
        y = "") +
-  scale_x_continuous(limits = c(-2.3,2.3))+
+  scale_x_continuous(limits = c(-2,2))+
   theme_minimal()
 post_Int
 
-# different way of visualizing
-sim_mod |>
-  data_grid(Sem = Sem, model = mdl_sim_mod) |>
-  add_epred_draws(mdl_sim_mod,
-                  re_formula = NA) |>
-  mutate(Sem_mm = (Sem)^2,
-         .epred_mm = (.epred)^2) |>
-  ggplot(aes(x = Sem_mm,
-             y = .epred_mm))+
-  stat_pointinterval(color = "white")+
-  scale_fill_brewer(palette = "Greys")+
-  labs(title = "Effect of semantical difference on distance between cities",
-       x = "\nDistance in mm",
-       y = "") +
-  scale_x_continuous(limits = c(-2.3,2.3))+
-  theme_minimal()
-
-  mutate(b_Sem1 = (b_Sem1)^2)|>
 
 # posterior probabilities of direction
+mdl_sim_mod|>
+    spread_draws(b_Sem1)|>
+    select(b_Sem1)|>
+    p_direction()
+# p(b<0) = 0.9883
+
+
+mdl_sim_mod |>
+    spread_draws(b_Phon1) |>
+    select(b_Phon1) |>
+    p_direction()
+# p(b<0) = 0.832
+
+mdl_sim_mod |>
+    spread_draws(`b_Sem1:Phon1`) |>
+    select(`b_Sem1:Phon1`) |>
+    p_direction()
+# p(b<0) = 0.6435
 
 
 #  Bayes Factors
+# fitting model without data
+mdl_sim_mod_priors <- brm(mdl_formula_mod,
+               family = gaussian(),
+               prior = my_priors_mod,
+               sample_prior = "only",
+               data = sim_mod)
 
+# for Sem
+# extracting posteriors of the models coefficients
+posteriors_Sem <- mdl_sim_mod |>
+  spread_draws(b_Sem1) |>
+    select(b_Sem1)
+# extracting priors of model
+priors_Sem <- mdl_sim_mod_priors |>
+  spread_draws(b_Sem1) |>
+    select(b_Sem1)
+# running bayes factor against null value
+bayesfactor_parameters(posteriors_Sem,
+                       priors_Sem,
+                       direction = "two-sided",
+                       null = 0)
+# bf = 0.673
 
+# for Phon
+# extracting posteriors of the models coefficients
+posteriors_Phon <- mdl_sim_mod |>
+  spread_draws(b_Phon1) |>
+    select(b_Phon1)
+# extracting priors of model
+priors_Phon <- mdl_sim_mod_priors |>
+  spread_draws(b_Phon1) |>
+    select(b_Phon1)
+# running bayes factor against null value
+bayesfactor_parameters(posteriors_Phon,
+                       priors_Phon,
+                       direction = "two-sided",
+                       null = 0)
+# bf = 0.105
+
+# for Interaction Term
+# extracting posteriors of the models coefficients
+posteriors_Int <- mdl_sim_mod |>
+  spread_draws(`b_Sem1:Phon1`) |>
+    select(`b_Sem1:Phon1`)
+# extracting priors of model
+priors_Int <- mdl_sim_mod_priors |>
+  spread_draws(`b_Sem1:Phon1`) |>
+    select(`b_Sem1:Phon1`)
+# running bayes factor against null value
+bayesfactor_parameters(posteriors_Int,
+                       priors_Int,
+                       direction = "two-sided",
+                       null = 0)
+# bf = 0.086
 
 ```
 
 ## (g) Write up your entire analysis:
 
-YOUR WRITE UP HERE
+I forgot to set a seed, so the actual results when running my code may differ slightly from what I report here and throughout my script:
+
+The model posterior for semantically and phonologically similar cities, the intercept, is 69mm. The square-root transformed model output is 8.29 with a 95% Credible Interval of [7.79,8.79], ranging from 61mm to 77mm.
+
+The models posterior distributions indicate, that sqaure-root transformed distance in between cities increase on average by 0.78 when two cities are semantically different (and phonologically similar) with a 95% credible interval of [0.10,1.47]. The average distance in mm is 82.
+Given our model, our data and our priors, 98.83% of the posterior sample is positive, showing that negative values ae possible, but not very likely.
+
+For phonetically different (and semantically similar) cities, the sqaure-root transformed distance decreased on average by -0.34 [95% CI: -1.06,0.34]. The average distance in mm is 63.
+Given our model, our data and our priors, 80.30% of the posterior sample is negative, which indicates that both negative and positive values are possible, even though negative ones are more likely.
+
+The interaction term, square-root transformed, is -0.19 with a 95% credible interval ranging [-1.18,0.83]. The average distance of both semantically and phonologically different cities is 73mm.  The interaction term shows a standard error twice of the size of the one for the other two predictors (0.49).
+Given our model, our data and our priors, 64.35% of the posterior sample is negative, which indicates that both negative and positive values are possible, with negative values being slightly more likely compared to positive ones.
+
+Subsequently, we calculate the Savage-Dickey density ratio [@DickeyLientz1970-The-Weighted-Li; @WagenmakersLodewyckx2010-Bayesian-hypoth; @roettgermeaningful], i.e., we relate the evidence (the probability of the posterior distribution at point-zero) for the model based on the priors only (i.e., before seeing the data) to the evidence for the model based on both priors and likelihood (i.e., after seeing the data) [e.g., @WetzelsGrasman2010-An-encompassing]. The Savage-Dickey method lets us assess evidence for and against a null hypothesis using Bayes factor. Here, the Bayes factor indicates the degree by which the mass of the posterior distribution has shifted further away from the point null value (relative to the prior distribution).
+(Thank you Timo for the nice wording).
+
+For Sem, the analysis yields a Bayes Factor of 0.673, indicating that the probability of the effect of semantical difference being point null has increased a tiny little bit, suggesting anecdotal evidence against the alternative hypothesis that the effect of semantical difference is point null[@lee-wagenmakers_Bayesian_book_2014].
+
+For Phon, the analysis yields a Bayes Factor of 0.105, indicating that the probability of the effect of ponological difference being point null has increased again only slighly, suggesting moderate evidence against the alternative hypothesis that the effect of phonological difference is point null[@lee-wagenmakers_Bayesian_book_2014].
+
+For the interaction term, the analysis yields a Bayes Factor of 0.086, indicating that the probability of the effect of the interaction of semantical and phonological difference being point null has increased, suggesting strong evidence against the alternative hypothesis that the effect of the interaction of semantical and phonological difference difference is point null[@lee-wagenmakers_Bayesian_book_2014].
+
+However, when calculating the Bayes Factors, the suggested sample size of at least 40.000 samples was by far not reached. Only 4000 samples where used.
+
 
 ## OPTIONAL (h) compare your interpretation to the original findings
 
