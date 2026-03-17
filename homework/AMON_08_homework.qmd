@@ -1,0 +1,288 @@
+---
+title: "session08 - homework"
+format: html
+editor: visual
+date: 2025-07-17
+author: Timo Roettger
+execute:
+  error: false
+  warning: false
+  message: false
+  cache: true
+bibliography: ../resources/bibliography.bib
+---
+
+# Preamble: Loading packages and configuration
+
+```{r}
+#| label: data_and_libraries
+#| echo: false
+
+# just run this code chunk
+# function to ignoring the setting of the relative path below when knitting
+run_if_not_knitting <- function(expr) {
+  if (!isTRUE(getOption("knitr.in.progress"))) {
+    eval(expr)
+  }
+}
+
+# nifty code using the pacman package
+# it checks if the packages specified below are installed, if not, they will be installed, if yes, they will be loaded
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(rstudioapi, tidyverse, tidybayes, brms, bayesplot, bayesrules, bayestestR, modelr)
+
+# set the current working directory to the one where this file is
+run_if_not_knitting(current_working_dir <- dirname(rstudioapi::getActiveDocumentContext()$path))
+run_if_not_knitting(setwd(current_working_dir))
+
+# options to increase efficiency of brms models (optional)
+#options(brms.backend = "cmdstanr")
+options(mc.cores = parallel::detectCores())
+
+```
+
+# Exercise
+
+We will be re-analyzing the data from @winter2013making.
+
+```{r}
+#| label: preprocessing_sim
+
+# Load our datasets
+sim <- read_csv("../data/linguistic_similarity.csv") |> 
+  mutate(Sem = as.factor(Sem),
+         Phon = as.factor(Phon))
+sim
+
+```
+
+We will now retrace the original article's complete analysis. In their original analysis, they were interested in whether (a) semantic similarity between cities, (b) phonological similarity between cities, and (c) their interaction affects how close/far apart participants draw the cities.
+
+## (a) Specify Priors
+
+Specify the model formula and appropriate weakly informative priors for all relevant predictors. Contrast-code the predictors.
+
+```{r}
+#| label: model_formula_sim
+
+# contrastcoding the predictors
+sim <- sim |>
+  mutate(Sem = as.factor(Sem),
+         Phon = as.factor(Phon))
+# double checking levels for both predictors
+levels(sim$Sem)
+levels(sim$Phon)
+# setting new contrasts so that 
+contrasts(sim$Sem) <- c(1,0) #Similar = 0, Different = 1
+contrasts(sim$Phon) <- c(1,0) #Similar = 0, Different = 1, 
+
+# specifying model formula
+mdl_formula <- bf(Distance ~ Sem * Phon)
+
+# checking which priors I need to set and what the coefficients names are
+get_prior(mdl_formula, sim, family = "gaussian")
+# Visualizing priors to make sure they look like I imagine
+plot_normal(108, 35)
+# setting my priors
+my_priors <- c(prior(normal(108,35), class = "Intercept"),
+               prior(normal(0,35), class = "b"))
+
+```
+
+## (b) Run the appropriate model for the research question
+
+```{r}
+#| label: model_sim
+
+# fitting and runnin gthe model
+mdl_sim <- brm(mdl_formula,
+               family = gaussian(),
+               prior = my_priors,
+               data = sim)
+
+```
+
+## (c) Posterior predicive check
+
+Check the overall model fit with posterior predictive checks. If the model does not fit the data well, fix the problem (check `06_homework_solutions.qmd` for inspiration).
+
+```{r}
+#| label: model_fit
+
+# assessing the models fit
+# checking Rhat and ESS
+mdl_sim
+# assessment: all Rhat values are exactly 1.0 and Bulk_ESS above 400 and 
+# Tail_ESS above 100
+
+# chould the model have generated the data?
+pp_check(mdl_sim, ndraws = 100)
+# the data is actually not really normally distributed, looking at the right 
+# side of the density curve which is quite wiggly 
+
+# solution: square rooting the response 
+
+sim_mod <- sim |>
+  mutate(sqrt_Distance = sqrt(Distance))
+
+# changing response variable name in formula
+mdl_formula_mod <- bf(sqrt_Distance ~ Sem * Phon)
+
+# Visualizing priors to make sure they look like I imagine
+plot_normal(10.39, 5.92)
+# adjusting my priors by square-rooting my initial "108, 35"
+my_priors_mod <- c(prior(normal(10.39, 5.92), class = "Intercept"),
+               prior(normal(0, 5.92), class = "b"),
+               # Also forgot to specify sigma for the original model
+               # but am doing it now for the adjusted one
+               prior(normal(0, 3), class = "sigma"))
+
+# rerunning the model
+mdl_sim_mod <- brm(mdl_formula_mod,
+               family = gaussian(),
+               prior = my_priors_mod,
+               data = sim_mod)
+
+# assessing new model
+mdl_sim_mod #comment: Rhat and ESS values just as good as before :)
+pp_check(mdl_sim_mod, ndraws= 100)
+# now the black and light blue ines match a lot better and I will proceed with the adjusted model mdl_sim_mod
+
+```
+
+## (d) Assess sampling diagnostics
+
+Check that chains are reasonably mixed and that sampling yielded a sufficient number of effective sample size. If there are issues, address them accordingly.
+
+```{r}
+#| label: sampling_diagnostics
+
+# through caterpillarplots
+mcmc_plot(mdl_sim_mod,
+          type = "trace")
+# Looks like 5 healthy caterpilars
+
+
+# checking correct names for coefficients
+get_prior(mdl_formula_mod, sim_mod, family = "gaussian")
+# checking how the chains overlap for all four parameters
+mcmc_dens_overlay(mdl_sim_mod,
+                  pars = 'Intercept')
+mcmc_dens_overlay(mdl_sim_mod,
+                  pars = 'b_Phon1')
+mcmc_dens_overlay(mdl_sim_mod,
+                  pars = 'b_Sem1')
+mcmc_dens_overlay(mdl_sim_mod,
+                  pars = 'b_Sem1:Phon1')
+mcmc_dens_overlay(mdl_sim_mod,
+                  pars = 'sigma')
+
+# All 5 look fine
+```
+
+## (e) Interpret the results
+
+Now interpret the model relative to the research question and describe uncertainty, visualize posteriors, calculate posterior probabilities of direction, and calculate Bayes Factors for evidence for and against the posterior coefficients being point zero.
+
+(Note: When you want to extract interaction terms like `b_Sem1:Phon1`, you have to put single quotation marks around them because R struggles with interpreting the colon)
+
+```{r}
+#| label: interpret_sim
+
+# model interpretation
+mdl_sim_mod
+
+# The model predicts an average difference between semantically and phonetically similar cities of 8.29 [7.79,8.79], which is 69mm with a 95% credibility interval ranging from 61mm to 77mm.
+# For phonetically similar and semantically different cities, distance increases by 0.78 [0.10,1.47], with an average distance of 82mm.
+# For semantically similar and phonetically different cities, however, distance decreases by -0.34 [-1.06,0.34], with an average distance of 63mm, thus being closer to each other than phonetically similar cities.
+# If cities are both phonetically and semantically different, the average distance is 73mm due to the interaction term of -0.19 [-1.18,0.83]. Also, the interaction term shows a standard error twice of the sie of the one for the other two predictors.
+
+
+# visualizing the posterior distribution
+# posterior for Semantic Properties
+post_Sem <- mdl_sim_mod|>
+  spread_draws(b_Sem1)|>
+  ggplot(aes(x = b_Sem1)) +
+  stat_halfeye(fill = "orange") +
+  geom_vline(xintercept = 0,
+             lty = 'dashed') +
+  scale_x_continuous()+
+  labs(title = "\nPosterior distribution of phonologically similar and\nsemantically different cities",
+       x = "\nDistance in sqrt(mm)",
+       y = "") +
+  scale_x_continuous(limits = c(-2.5,2.5))+
+  theme_minimal()
+post_Sem
+
+# posterior for Phonetical Properties
+post_Phon <- mdl_sim_mod|>
+  spread_draws(b_Phon1)|>
+  ggplot(aes(x = b_Phon1)) +
+  stat_halfeye(fill = "skyblue") +
+  geom_vline(xintercept = 0,
+             lty = 'dashed') +
+  scale_x_continuous()+
+  labs(title = "\nPosterior distribution of semantically similar and\nphonologically different cities",
+       x = "\nDistance in sqrt(mm)",
+       y = "") +
+  scale_x_continuous(limits = c(-2.3,2.3))+
+  theme_minimal()
+post_Phon
+
+# posterior for Interaction Term
+post_Int <- mdl_sim_mod|>
+  spread_draws(`b_Sem1:Phon1`)|>
+  ggplot(aes(x = `b_Sem1:Phon1`)) +
+  stat_halfeye(fill = "purple") +
+  geom_vline(xintercept = 0,
+             lty = 'dashed') +
+  scale_x_continuous()+
+  labs(title = "\nPosterior distribution of phonologically and\nsemantically different cities",
+       x = "\nDistance in sqrt(mm)",
+       y = "") +
+  scale_x_continuous(limits = c(-2.3,2.3))+
+  theme_minimal()
+post_Int
+
+# different way of visualizing
+sim_mod |>
+  data_grid(Sem = Sem, model = mdl_sim_mod) |>
+  add_epred_draws(mdl_sim_mod,
+                  re_formula = NA) |>
+  mutate(Sem_mm = (Sem)^2,
+         .epred_mm = (.epred)^2) |>
+  ggplot(aes(x = Sem_mm,
+             y = .epred_mm))+
+  stat_pointinterval(color = "white")+
+  scale_fill_brewer(palette = "Greys")+
+  labs(title = "Effect of semantical difference on distance between cities",
+       x = "\nDistance in mm",
+       y = "") +
+  scale_x_continuous(limits = c(-2.3,2.3))+
+  theme_minimal()
+
+  mutate(b_Sem1 = (b_Sem1)^2)|>
+
+# posterior probabilities of direction
+
+
+#  Bayes Factors
+
+
+
+```
+
+## (g) Write up your entire analysis:
+
+YOUR WRITE UP HERE
+
+## OPTIONAL (h) compare your interpretation to the original findings
+
+YOUR COMPARISON HERE
+
+# References
+
+<!-- References will auto-populate in the refs div below -->
+
+::: {#refs}
+:::
