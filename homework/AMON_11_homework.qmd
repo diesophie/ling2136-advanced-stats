@@ -1,0 +1,273 @@
+---
+title: "session11 - homework"
+format: html
+editor: visual
+date: 2025-07-17
+author: Timo Roettger
+execute:
+  error: false
+  warning: false
+  message: false
+  cache: true
+bibliography: ../resources/bibliography.bib
+---
+
+# Preamble: Loading packages and configuration
+
+```{r}
+#| label: data_and_libraries
+#| echo: false
+
+# just run this code chunk
+# function to ignoring the setting of the relative path below when knitting
+run_if_not_knitting <- function(expr) {
+  if (!isTRUE(getOption("knitr.in.progress"))) {
+    eval(expr)
+  }
+}
+
+# nifty code using the pacman package
+# it checks if the packages specified below are installed, if not, they will be installed, if yes, they will be loaded
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(rstudioapi, tidyverse, tidybayes, brms, ggdist, bayestestR, modelr)
+
+# set the current working directory to the one where this file is
+run_if_not_knitting(current_working_dir <- dirname(rstudioapi::getActiveDocumentContext()$path))
+run_if_not_knitting(setwd(current_working_dir))
+
+# options to increase efficiency of brms models (optional)
+options(brms.backend = "cmdstanr")
+options(mc.cores = parallel::detectCores())
+
+```
+
+# Introduction
+
+We will be analyzing the data from @roettger2014assessing.
+
+```{r}
+#| label: preprocessing
+
+# Load our datasets
+incNeutr <- read_csv("../data/E1_production.csv") |> 
+  # we will focus only on the relevant columns
+  select(subject, voicing, item_pair, usable, vowel_dur) |> 
+  # and only on rows the authors deemed usable
+  filter(usable == "usable") |> 
+  select(!usable)
+
+```
+
+The variables:
+
+`subject`: unique identifier for participants (n = 16)
+
+`voicing`: underlying voicing status of stop (`voiced` vs. `voiceless`)
+
+`item_pair`: unique identifier for pseudo word minimal pairs (n = 24)
+
+`vowel_dur`: vowel duration in ms
+
+In this study, we recorded people producing words such as Rad and Rat in German and were interested to see whether these words phonetically differ. The reason why this is interesting is that, according to German phonology, these words *should* be identical, i.e. the voicing distinction between /d/ and /t/ should have been *neutralized.* However, previous literature indicates that this neutralization is phonetically *incomplete.* For example, the vowel preceding a (de)voiced stop such /d/ is slightly longer preceding a voiceless stop such as /t/.
+
+The researchers hypothesize that the vowel duration is meaningfully longer preceding voiced stops than preceding voiceless stops. They model this relationship using a linear mixed effects model that accounts for both speaker and word variation as well as by-speaker and by-word variation for the critical predictor voicing.
+
+```{r}
+#| label: model_formula
+
+# store model formula
+mdl_formula = bf(vowel_dur ~ voicing +
+                   # random intercepts and slopes for subject and item_pair
+                   (1 + voicing | subject) +
+                   (1 + voicing | item_pair))
+
+```
+
+```{r}
+#| label: spec-priors
+
+# some weakly informative priors 
+my_priors <- c(prior(normal(150,50), class = 'Intercept'),
+               # weakly informative prior for the voicing difference (very diffuse)
+               prior(normal(0, 30), class = 'b', coef = 'voicingvoiceless'),
+               # weakly informative prior for all sources of variance (very diffuse)
+               prior(cauchy(0,100), class = 'sd'),
+               # weakly informative prior for residual variance (very diffuse)
+               prior(cauchy(0,100), class = 'sigma'),
+               # correlations
+               prior(lkj(1), class = 'cor'))
+
+```
+
+```{r}
+#| label: run-model
+
+# run model
+xmdl <- brm(mdl_formula,
+            family = gaussian(),
+            prior = my_priors,
+            file = "../models/in_sesoi",
+            data = incNeutr,
+            seed = 42)
+
+# I also store the prior-only model 
+xmdl_prior <- brm(mdl_formula,
+            family = gaussian(),
+            prior = my_priors,
+            sample_prior = "only",
+            file = "../models/in_sesoi_priors",
+            data = incNeutr,
+            seed = 42)
+
+```
+
+# Exercises
+
+## (a) Plot the posterior distribution
+
+Explore the posterior distribution for the difference between voiced and voiceless stops. Interpret it.
+
+```{r}
+{echo = FALSE}
+#checking model assumptions
+pp_check(xmdl, ndraws= 100) #overlays fine, there is a right tail which can be due to the natural lower bound of duration.
+mcmc_plot(xmdl, type = 'trace') # look like healthy caterpillars
+mcmc_dens_overlay(xmdl, pars = 'b_voicingvoiceless')
+mcmc_dens_overlay(xmdl, pars = 'Intercept') # both density overlay plots show that the chains overlay well
+
+{echo = TRUE}
+# looking at model output
+summary(xmdl) # Rhat and ESS values are fine for all coefficients
+
+# plotting the intercept to see it the distribution is actually normal
+xmdl |> spread_draws(Intercept) |>
+  ggplot(aes(x = Intercept))+
+  stat_halfeye(fill = 'skyblue4')+
+  labs(x = "vowel duration in words with voiced consonant",
+       y = "")+
+  theme_minimal()
+# looks like a normal distribution
+
+# plotting the posterior distribution of the voiceless consonats
+xmdl |> spread_draws(b_voicingvoiceless) |>
+  ggplot(aes(x = b_voicingvoiceless))+
+  stat_halfeye(fill = 'skyblue')+
+  geom_vline(xintercept = 0,
+             lty = "dashed")+
+  labs(x = "vowel duration in words with voiceless consonant",
+       y = "")+
+  theme_minimal()
+
+# calculating pd of direction
+xmdl |> 
+  spread_draws(b_voicingvoiceless) |>
+  select(b_voicingvoiceless) |>
+  p_direction()
+
+# Interpretation:
+# As the posterior plot of the coefficient 'b_voicingvoiceless' shows
+# the vowel duration in words with final voiceless consonants decreases
+# compared to words with a final voiced consonant.
+# Our model estimated an average decrease of 8.54ms. The 95% Credible
+# Interval spans from [-13.17, -4.13], indicating a strong likelyhood
+# for an effect in that direction. However, looking at the plot only,
+# we see that the blue of our posterior distribution still crosses zero.
+# Calculating the probability distribution of direction, which is 
+# 99.98%, reveals that given our data, model and priors it is still
+# possible for an effect of oposite sign, thus longer vowel duration in 
+# words with voiceless consonats compared to voiced consonants. But this
+# effect is very unlikely and woul dbe of an increase in duration of
+# less than 1 ms.
+
+# The vowel duration our model estimated for vowels in words with a
+# final voiced consonant is 159.15 ms with a 95% CI of [138.67,178.29].
+
+```
+
+## (b) Define a SESOI
+
+Define a SESOI and justify it. Can you find an applied justification for a SESOI. Or a theoretical justification? Are there justifications grounded in measurement? What about justifications based on previous research? Define it and formalize it as a Region of Practical Equivalence as we have done before. Use the `bayesfactor_rope()` function to calculate the Bayes factor for and against the posteriors being inside the ROPE.
+
+```{r}
+# justification for a SESOI
+
+# There seems to be only a very small SESOI grounded in measurement. THe article states that vowel duration was measured using PRAAT. In the following article (https://praatscripting.lingphon.net/example-2.html) I found that even if the boundaries of a tier look as is they were placed on the same point in time, the difference between them is 0.002ms, which can be seen when zooming in.
+
+# (https://pubmed.ncbi.nlm.nih.gov/7354196/) Nooteboom and Doodeman (1980) difine a Just noticable difference of 5ms for vowel durations when the tested segment had a total duration og 90ms. Their analysis however, was about Dutch speakers.
+# (https://repository.stcloudstate.edu/stcloud_ling/vol7/iss1/2/) Koffi (2018) writes that several studies have found that 10ms is the minimum difference in duration needed for listeners to be able to hear that two segments differ in length. If the difference in length is 17ms or longer, participants can reliable detect which one was longer
+
+# While Nooteboom and Doodeman (1980) measured vowel length diferentiating between long and short vowels, Koffi (2018) was investigating the length of stressed vs unstressed syllables.
+# Therefore, the differnce of 5ms mentioned by Nooteboom and Doodeman (1980) seem more fitting for the current analyses.
+
+# Therefore, I am now gong to use 5ms as my SESOI, knowing that this is not competely justified as the article I took that number from was investigating vowel length while the currenc analysis focuses on incomplete neutralization of final devoiced stops. 
+
+# defining ROPE using our SESOI
+rope <- c(-5,5)
+
+# calculating Bayes Factor with ROPE using the SESOI of ...
+bayesfactor_rope(posterior = xmdl,
+                 null = rope,
+                 parameter = 'b_voicingvoiceless')
+# result: BF = 2.79
+
+```
+
+## (c) Check robustness of your analysis
+
+How robust is your conclusion against different prior choices?
+
+```{r}
+
+# fitting a model with more narrow priors
+my_priors_narrow <- c(prior(normal(150,50), class = 'Intercept'),
+            # changing prior from 30 to 15          
+               prior(normal(0, 15), class = 'b',
+                     coef = 'voicingvoiceless'),
+               prior(cauchy(0,100), class = 'sd'),
+               prior(cauchy(0,100), class = 'sigma'),
+               prior(lkj(1), class = 'cor'))
+
+xmdl_narrow <- brm(mdl_formula,
+            family = gaussian(),
+            prior = my_priors_narrow,
+            data = incNeutr,
+            seed = 42)
+
+bayesfactor_rope(posterior = xmdl_narrow,
+                 null = rope,
+                 parameter = 'b_voicingvoiceless')
+# result: BF = 4.26
+
+# fitting a model with wider priors
+my_priors_wide <- c(prior(normal(150,50), class = 'Intercept'),
+            # changing prior from 30 to 60          
+               prior(normal(0, 60), class = 'b',
+                     coef = 'voicingvoiceless'),
+               prior(cauchy(0,100), class = 'sd'),
+               prior(cauchy(0,100), class = 'sigma'),
+               prior(lkj(1), class = 'cor'))
+
+xmdl_wide <- brm(mdl_formula,
+            family = gaussian(),
+            prior = my_priors_wide,
+            data = incNeutr,
+            seed = 42)
+
+bayesfactor_rope(posterior = xmdl_wide,
+                 null = rope,
+                 parameter = 'b_voicingvoiceless')
+# result: BF = 1.01
+
+
+# Interpretation:
+# With a SESOI of 5ms, calculating Bayes Factor using ROPE, shows anecdotal evidence in favour of the alternative hypothesis. If I decrease the spread of my prior, divinging it by 2, the BF increases from 2.79 to 4.26, which would be somewhat more evidence in favour of the alternative hypothesis, but still not very convincing. If I, on the other hand, use wider prious, multiplying the original prior width by 2, the BF shrinks to 1.01. That means that there is no difference between the Null hypothesis and the alternative. 
+# I therefore cunclude, that the effect found in this analysis is minor and should be investigated further.
+
+```
+
+# References
+
+<!-- References will auto-populate in the refs div below -->
+
+::: {#refs}
+:::
